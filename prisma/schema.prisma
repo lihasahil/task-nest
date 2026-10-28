@@ -1,0 +1,109 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum MessageStatus {
+  pending
+  sent
+  failed
+}
+
+enum TransactionType {
+  DEBIT
+  REFUND
+}
+
+model User {
+  id           String       @id @default(uuid())
+  email        String       @unique
+  passwordHash String
+  createdAt    DateTime     @default(now())
+  wallet       Wallet?
+  messages     SmsMessage[]
+
+  @@map("users")
+}
+
+// One credit balance per user. Integer credits (1 credit = 1 SMS part).
+model Wallet {
+  id           String              @id @default(uuid())
+  userId       String              @unique
+  balance      Int                 @default(0)
+  user         User                @relation(fields: [userId], references: [id])
+  transactions CreditTransaction[]
+
+  @@map("wallets")
+}
+
+model SmsProvider {
+  id          String            @id @default(uuid())
+  name        String            @unique
+  priority    Int // lower number is tried first
+  balance     Int // SMS parts this route can still send
+  failureRate Float             @default(0) // 0..1
+  enabled     Boolean           @default(true)
+  messages    SmsMessage[]
+  attempts    ProviderAttempt[]
+
+  @@map("sms_providers")
+}
+
+// One row per recipient.
+model SmsMessage {
+  id            String            @id @default(uuid())
+  userId        String
+  recipient     String // normalised 10-digit number
+  body          String
+  parts         Int
+  cost          Int
+  status        MessageStatus     @default(pending)
+  providerId    String?
+  failureReason String?
+  createdAt     DateTime          @default(now())
+  sentAt        DateTime?
+  user          User              @relation(fields: [userId], references: [id])
+  provider      SmsProvider?      @relation(fields: [providerId], references: [id])
+  attempts      ProviderAttempt[]
+
+  @@index([userId, createdAt])
+  @@index([userId, status])
+  @@index([userId, recipient])
+  @@map("sms_messages")
+}
+
+// One row per try on a route: shows the failover sequence and feeds route health.
+model ProviderAttempt {
+  id          String      @id @default(uuid())
+  messageId   String
+  providerId  String
+  success     Boolean
+  error       String?
+  attemptedAt DateTime    @default(now())
+  message     SmsMessage  @relation(fields: [messageId], references: [id])
+  provider    SmsProvider @relation(fields: [providerId], references: [id])
+
+  @@index([providerId, attemptedAt])
+  @@index([messageId])
+  @@map("provider_attempts")
+}
+
+// Ledger. The unique pair means a message has at most one DEBIT and one REFUND.
+model CreditTransaction {
+  id        String          @id @default(uuid())
+  walletId  String
+  messageId String?
+  amount    Int // negative for DEBIT, positive for REFUND
+  type      TransactionType
+  createdAt DateTime        @default(now())
+  wallet    Wallet          @relation(fields: [walletId], references: [id])
+
+  @@unique([messageId, type])
+  @@index([walletId, createdAt])
+  @@map("credit_transactions")
+}
